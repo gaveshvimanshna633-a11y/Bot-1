@@ -197,8 +197,65 @@ async function recover(sock, chat, deletedId, deletedBy) {
   }
 }
 
+// ───────────────────────── AUTO OPEN / CLOSE SCHEDULER ─────────────────────────
+const TZ = 'Asia/Colombo';
+const p2 = (n) => String(n).padStart(2, '0');
+
+// "22:00", "2200", "10pm", "6:30am"  ->  "22:00"  (null if invalid)
+function parseTime(str) {
+  const m = String(str || '').toLowerCase().replace(/\s+/g, '').match(/^(\d{1,2}):?(\d{2})?(am|pm)?$/);
+  if (!m) return null;
+  let h = +m[1];
+  const min = +(m[2] || 0);
+  if (m[3]) {
+    if (h < 1 || h > 12) return null;
+    if (m[3] === 'pm' && h < 12) h += 12;
+    if (m[3] === 'am' && h === 12) h = 0;
+  }
+  if (h > 23 || min > 59) return null;
+  return `${p2(h)}:${p2(min)}`;
+}
+const to12 = (t) => { const [h, m] = t.split(':').map(Number); return `${h % 12 || 12}:${p2(m)} ${h < 12 ? 'AM' : 'PM'}`; };
+
+let schedSock = null;
+let schedTimer = null;
+const fired = new Set(); // "group|field|day|hh:mm" -> already done, so it never runs twice
+
+async function tick() {
+  if (!schedSock) return;
+  const now = new Date();
+  const hhmm = now.toLocaleTimeString('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  const day = now.toLocaleDateString('en-CA', { timeZone: TZ });
+
+  for (const [jid, g] of Object.entries(settings.groups)) {
+    for (const [field, action] of [['closeAt', 'announcement'], ['openAt', 'not_announcement']]) {
+      if (g[field] !== hhmm) continue;
+      const key = `${jid}|${field}|${day}|${hhmm}`;
+      if (fired.has(key)) continue;
+      fired.add(key);
+      if (fired.size > 500) fired.delete(fired.values().next().value);
+      try {
+        await schedSock.groupSettingUpdate(jid, action);
+        const closing = action === 'announcement';
+        const other = closing ? g.openAt : g.closeAt;
+        await schedSock.sendMessage(jid, {
+          text: closing
+            ? `🔇 *Group closed* — only admins can send messages.${other ? `\n🔊 Opens again at *${to12(other)}*` : ''}`
+            : `🔊 *Group opened* — everyone can send messages.${other ? `\n🔇 Closes at *${to12(other)}*` : ''}`,
+        });
+      } catch (e) { console.error(`[group.js] auto ${field} failed for ${jid}:`, e.message); }
+    }
+  }
+}
+
+function startScheduler(sock) {
+  schedSock = sock;                       // always use the newest socket (after reconnects)
+  if (!schedTimer) schedTimer = setInterval(() => tick().catch(() => {}), 20000);
+}
+
 // ───────────────────────── ONE-TIME SOCKET HOOKS (called from index.js) ─────────────────────────
 function init(sock) {
+  startScheduler(sock);
   // 1) store every message + detect deletes + antilink
   sock.ev.on('messages.upsert', async ({ messages }) => {
     for (const mek of messages) {
@@ -407,6 +464,31 @@ async (sock, mek, m, ex) => {
   sock.sendMessage(ex.from, { text: `👑 *Admins*\n\n${ex.groupAdmins.map((j) => '@' + num(j)).join('\n')}`, mentions: ex.groupAdmins }, { quoted: mek });
 });
 
+
+// .autoclose 22:00 | off     .autoopen 06:00 | off     (Sri Lanka time)
+for (const [pattern, field, icon, label] of [['autoclose', 'closeAt', '🔇', 'close'], ['autoopen', 'openAt', '🔊', 'open']]) {
+  cmd({ pattern, desc: `Auto ${label} the group daily. Eg: .${pattern} ${label === 'close' ? '22:00' : '6:00am'} | off`, category: 'group', react: icon, filename: __filename },
+  async (sock, mek, m, ex) => {
+    if (!(await guard(sock, mek, ex))) return;
+    const a = (ex.q || '').trim().toLowerCase();
+    const g = gs(ex.from);
+    if (a === 'off') { g[field] = null; save(); return ex.reply(`❌ Auto-${label} disabled.`); }
+    const t = parseTime(a);
+    if (!t) {
+      return ex.reply(`${icon} *Auto-${label}:* ${g[field] ? to12(g[field]) + ' ✅' : 'OFF ❌'}\n\nUsage:\n• .${pattern} 22:00\n• .${pattern} 10pm\n• .${pattern} off\n\n🕒 Sri Lanka time`);
+    }
+    g[field] = t; save();
+    ex.reply(`✅ Group will *${label}* every day at *${to12(t)}* (Sri Lanka time).`);
+  });
+}
+
+// .schedule  (show auto open/close times)
+cmd({ pattern: 'schedule', desc: 'Show auto open/close times of this group', category: 'group', react: '⏰', filename: __filename },
+async (sock, mek, m, ex) => {
+  if (!(await guard(sock, mek, ex, { admin: false, botAdmin: false }))) return;
+  const g = gs(ex.from);
+  ex.reply(`⏰ *Group schedule* (Sri Lanka time)\n\n🔇 Auto-close: ${g.closeAt ? to12(g.closeAt) : 'OFF'}\n🔊 Auto-open: ${g.openAt ? to12(g.openAt) : 'OFF'}`);
+});
 
 // .botcheck  (shows how the bot sees itself / the admins in this group)
 cmd({ pattern: 'botcheck', desc: 'Debug: show bot & admin ids in this group', category: 'group', react: '🔍', filename: __filename },
