@@ -1,0 +1,43 @@
+name: Run DANUWA-MD
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+  schedule:
+    - cron: '0 */6 * * *'
+
+concurrency:
+  group: bot
+  cancel-in-progress: true
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+
+      - name: Check secrets
+        env:
+          SESSION_ID: ${{ secrets.SESSION_ID }}
+        run: |
+          if [ -z "$SESSION_ID" ]; then
+            echo "::error::SESSION_ID secret is EMPTY. Add it in Settings > Secrets and variables > Actions (name must be exactly SESSION_ID)."
+            exit 1
+          fi
+          echo "SESSION_ID found (${#SESSION_ID} characters)"
+
+      - run: npm install
+
+      - run: node index.js
+        env:
+          SESSION_ID: ${{ secrets.SESSION_ID }}
+          CINE_API_KEY: ${{ secrets.CINE_API_KEY }}
+          ALIVE_IMG: ${{ secrets.ALIVE_IMG }}
+          ALIVE_MSG: ${{ secrets.ALIVE_MSG }}
