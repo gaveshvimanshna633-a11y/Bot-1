@@ -6,7 +6,7 @@ function convertToBool(text, fault = 'true') {
 }
 
 module.exports = {
-  SESSION_ID: process.env.SESSION_ID || '',
+  SESSION_ID: process.env.SESSION_ID || 'SfBQECBY#do23u3_QVOGSm46M1N_rfeG6tHqNErzB0woGRdMlDVM',
   PREFIX: process.env.PREFIX || '.',
 
   // ---------- bot identity (used by .alive) ----------
